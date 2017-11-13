@@ -1,76 +1,85 @@
 
 var gl;
 var canvas;
+
 var shaderProgram;
+
+// Create a place to store the texture coords for the mesh
+var cubeTCoordBuffer;
+
+// Create a place to store terrain geometry
+var cubeVertexBuffer;
+
+// Create a place to store the triangles
+var cubeTriIndexBuffer;
+
+// Create ModelView matrix
+var mvMatrix = mat4.create();
+
+//Create Projection matrix
+var pMatrix = mat4.create();
+
+var mvMatrixStack = [];
+
+// Create a place to store the texture
+
+var cubeImage;
+var cubeTexture;
 
 // Teapot buffers
 var vertexPositionBuffer;
 var vertexNormalBuffer;
 var vertexIndexBuffer;
-
-// Skybox buffers
-var cubeVertexBuffer;
-var cubeTriIndexBuffer;
-var cubeTCoordBuffer;
-
-// Texture buffers
-var cubeImage;
-var cubeTexture;
 var vertexTextureCoordBuffer; 
 
-var mvMatrix = mat4.create();
-var pMatrix = mat4.create();
-var nMatrix = mat3.create();
+// For animation 
+var then =0;
+var modelXRotationRadians = degToRad(5);
+var modelYRotationRadians = degToRad(.5);
 
-var rotAngle = 0;
-var lastTime = 0;
-
-var x = 0;
-
-var eyePt = vec3.fromValues(0.0,0.0,0.0);
-var viewPt = vec3.fromValues(0.0,0.0,0.0);
-var viewDir = vec3.fromValues(0.0,0.0,0.0);
-var up = vec3.fromValues(0.0,0.0,0.0);
-var angle = 0;
-/*
-  Set matrix uniforms for the shader
-*/
 //-------------------------------------------------------------------------
+// Upload MV matrix
 function uploadModelViewMatrixToShader() {
   gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
 }
 
 //-------------------------------------------------------------------------
+//Push projection matrix to stack
 function uploadProjectionMatrixToShader() {
   gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, 
                       false, pMatrix);
 }
-//-------------------------------------------------------------------------
-function uploadNormalMatrixToShader() {
-  mat3.fromMat4(nMatrix,mvMatrix);
-  mat3.transpose(nMatrix,nMatrix);
-  mat3.invert(nMatrix,nMatrix);
-  gl.uniformMatrix3fv(shaderProgram.nMatrixUniform, false, nMatrix);
+
+//----------------------------------------------------------------------------------
+//Push mvMatrix to stack
+function mvPushMatrix() {
+    var copy = mat4.clone(mvMatrix);
+    mvMatrixStack.push(copy);
 }
+
+
+//----------------------------------------------------------------------------------
+function mvPopMatrix() {
+    if (mvMatrixStack.length == 0) {
+      throw "Invalid popMatrix!";
+    }
+    mvMatrix = mvMatrixStack.pop();
+}
+
 //----------------------------------------------------------------------------------
 function setMatrixUniforms() {
     uploadModelViewMatrixToShader();
-    uploadNormalMatrixToShader();
     uploadProjectionMatrixToShader();
 }
 
 //----------------------------------------------------------------------------------
+// Convert radians to degrees
 function degToRad(degrees) {
         return degrees * Math.PI / 180;
 }
 
-/*
-    function create GL context:
-    input: canvas
-    output: context
-
-    Creates a GL context out of the provided canvas
-*/
+//----------------------------------------------------------------------------------
+// Setup the WebGL context
 function createGLContext(canvas) {
   var names = ["webgl", "experimental-webgl"];
   var context = null;
@@ -91,13 +100,8 @@ function createGLContext(canvas) {
   return context;
 }
 
-/*
-    function Load shaders
-    input: id
-    output: shader
-
-    Create a shader for use in WebGL
-*/
+//----------------------------------------------------------------------------------
+// Get shaders from the HTML file
 function loadShaderFromDOM(id) {
   var shaderScript = document.getElementById(id);
   
@@ -137,16 +141,11 @@ function loadShaderFromDOM(id) {
   return shader;
 }
 
-/*
-    function setupShaders:
-    input: none
-    output: none
-
-    Setup the shaders with the proper colors for use in WebGL
-*/
+//----------------------------------------------------------------------------------
+// Setup shaders
 function setupShaders() {
-  var vertexShader = loadShaderFromDOM("shader-vs");
-  var fragmentShader = loadShaderFromDOM("shader-fs");
+  vertexShader = loadShaderFromDOM("shader-vs");
+  fragmentShader = loadShaderFromDOM("shader-fs");
   
   shaderProgram = gl.createProgram();
   gl.attachShader(shaderProgram, vertexShader);
@@ -158,37 +157,194 @@ function setupShaders() {
   }
 
   gl.useProgram(shaderProgram);
+
+  //Texture coordinate locations
+  shaderProgram.texCoordAttribute = gl.getAttribLocation(shaderProgram, "aTexCoord");
+  console.log("Tex coord attrib: ", shaderProgram.texCoordAttribute);
+  gl.enableVertexAttribArray(shaderProgram.texCoordAttribute);
+    
+  //Vertex positions  
   shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+  console.log("Vertex attrib: ", shaderProgram.vertexPositionAttribute);
   gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
 
+  //Vertex normals
   shaderProgram.vertexNormalAttribute = gl.getAttribLocation(shaderProgram, "aVertexNormal");
   gl.enableVertexAttribArray(shaderProgram.vertexNormalAttribute);
-
-  shaderProgram.texCoordAttribute = gl.getAttribLocation(shaderProgram, "aTexCoord"); //texture coordinates
-  gl.enableVertexAttribArray(shaderProgram.texCoordAttribute);
-
+    
+  // MV and P matrices  
   shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
   shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
-  shaderProgram.nMatrixUniform = gl.getUniformLocation(shaderProgram, "uNMatrix");
-
 }
 
-/*
-    function setupBuffers:
-    input: none
-    output: none
+//-----------------------------------------------------------------------------------
+function drawCube(){
+  //First draw the teapot
+    gl.useProgram(shaderProgram);
+  gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+  gl.uniform1i(gl.getUniformLocation(shaderProgram,"teapot"), 1);    //shader knows it's 
+  gl.enableVertexAttribArray(shaderProgram.vertexNormalAttribute);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBuffer);
+  gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, 
+                         vertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0); //enable vertex positions
+                          
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexNormalBuffer);
+  gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, 
+                         vertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);  //enable normals
 
-    Setup the badge with the proper colors for use in WebGL
-*/
-var cubeVertexBuffer;
-var cubeTriIndexBuffer;
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexTextureCoordBuffer);
+  gl.vertexAttribPointer(shaderProgram.texCoordAttribute, 2, gl.FLOAT, false, 0, 0); //texture coordinate attrib
 
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, cubeTexture);
+  gl.uniform1i(gl.getUniformLocation(shaderProgram, "uSampler"), 0);  //enable all of the textures for WebGL
+
+  gl.useProgram(shaderProgram);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, vertexIndexBuffer);   
+
+
+  setMatrixUniforms();
+  gl.drawElements(gl.TRIANGLES, vertexIndexBuffer.numberOfItems, gl.UNSIGNED_SHORT, 0); //draw the teapot
+
+  // Draw the cube by binding the array buffer to the cube's vertices
+  // array, setting attributes, and pushing it to GL.
+
+    gl.uniform1i(gl.getUniformLocation(shaderProgram,"teapot"), 0);    
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexBuffer);
+  gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, 3, gl.FLOAT, false, 0, 0);
+
+  // Set the texture coordinates attribute for the vertices.
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, cubeTCoordBuffer);
+  gl.vertexAttribPointer(shaderProgram.texCoordAttribute, 2, gl.FLOAT, false, 0, 0);
+
+  // Specify the texture to map onto the faces.
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, cubeTexture);
+  gl.uniform1i(gl.getUniformLocation(shaderProgram, "uSampler"), 0);
+
+  // Draw the cube.
+
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeTriIndexBuffer);
+  setMatrixUniforms();
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+}
+var eyePos = vec3.fromValues(2,0.5,0);
+//----------------------------------------------------------------------------------
+function draw() { 
+    var transformVec = vec3.create();
+  
+    gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    // We'll use perspective 
+    mat4.perspective(pMatrix,degToRad(45), gl.viewportWidth / gl.viewportHeight, 0.1, 200.0);
+ 
+    //Draw 
+    mvPushMatrix();
+    vec3.set(transformVec,0.0,0.0,-10.0);
+    mat4.translate(mvMatrix, mvMatrix,transformVec);
+    mat4.lookAt(mvMatrix, eyePos, [0,0,0], [0,1,0]);
+    //mat4.rotateY(mvMatrix,mvMatrix,modelYRotationRadians);
+
+    //lighting for teapot
+  gl.useProgram(shaderProgram);
+
+  var ambientUL = gl.getUniformLocation(shaderProgram, 'ambientLightIntensity'); //sunlight values
+  var sunlightDUL = gl.getUniformLocation(shaderProgram, 'sunlightDirection');
+  var sunlightIUL = gl.getUniformLocation(shaderProgram, 'sunlightIntensity');
+
+  gl.uniform3f(ambientUL, 0.6, 0.6, 0.6);
+  gl.uniform3f(sunlightDUL, 3.0, 4.0, -2.0);
+  gl.uniform3f(sunlightIUL, 0.9, 0.9, 0.9);
+
+    setMatrixUniforms();    
+    drawCube(); //call to draw
+    mvPopMatrix();
+  
+}
+
+//----------------------------------------------------------------------------------
+function animate() {
+    if (then==0)
+    {
+        then = Date.now();
+    }
+    else
+    {
+        now=Date.now();
+        // Convert to seconds
+        now *= 0.001;
+        // Subtract the previous time from the current time
+        var deltaTime = now - then;
+        // Remember the current time for the next frame.
+        then = now;
+
+        //Orbit the teapot, if selected by the user
+        if(document.getElementById("orbit").checked){
+          //eyePos[0]=Math.cos(modelYRotationRadians)*eyePos[0]-Math.sin(modelYRotationRadians)*eyePos[2];
+          //eyePos[2]=Math.sin(modelYRotationRadians)*eyePos[0]+Math.cos(modelYRotationRadians)*eyePos[2];
+          eyePos[0] = 2*Math.cos(rot);
+          eyePos[2] = 2*Math.sin(rot);
+          rot += degToRad(1);
+      }
+  
+    }
+}
+
+var rot = 0; //rotation variable
+//---------------------------------------------------------------------------------
+// Setup the textures for use
+function setupTextures() {
+  cubeTexture = gl.createTexture();
+ gl.bindTexture(gl.TEXTURE_2D, cubeTexture);
+// Fill the texture with a 1x1 blue pixel.
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+              new Uint8Array([0, 0, 255, 255]));
+
+  cubeImage = new Image();
+  cubeImage.onload = function() { handleTextureLoaded(cubeImage, cubeTexture); }
+  cubeImage.src = "pos-x.png";
+   // https://goo.gl/photos/SUo7Zz9US1AKhZq49
+}
+
+//---------------------------------------------------------------------------------
+// Check if it's a power of two file
+function isPowerOf2(value) {
+  return (value & (value - 1)) == 0;
+}
+
+//---------------------------------------------------------------------------------
+// Onload texture function
+function handleTextureLoaded(image, texture) {
+  console.log("handleTextureLoaded, image = " + image);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,gl.UNSIGNED_BYTE, image);
+  // Check if the image is a power of 2 in both dimensions.
+  if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
+     // Yes, it's a power of 2. Generate mips.
+     gl.generateMipmap(gl.TEXTURE_2D);
+     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+     console.log("Loaded power of 2 texture");
+  } else {
+     // No, it's not a power of 2. Turn of mips and set wrapping to clamp to edge
+     gl.texParameteri(gl.TETXURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+     gl.texParameteri(gl.TETXURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+     gl.texParameteri(gl.TETXURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+     console.log("Loaded non-power of 2 texture");
+  }
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+}
+
+//----------------------------------------------------------------------------------
+// Setup the buffers
 function setupBuffers() {
+
     readTextFile('teapot_0.obj', function (file) { //get the teapot object file
       teapot(computeNorms(obj2data(file)));
   });
-
-
   // Create a buffer for the cube's vertices.
 
   cubeVertexBuffer = gl.createBuffer();
@@ -201,42 +357,7 @@ function setupBuffers() {
   // Now create an array of vertices for the cube.
 
   var vertices = [
-    -0.5, -0.5,  0.5,
-     0.5, -0.5,  0.5,
-     0.5,  0.5,  0.5,
-    -0.5,  0.5,  0.5,
-
-    // Back face
-    -0.5, -0.5, -0.5,
-    -0.5,  0.5, -0.5,
-     0.5,  0.5, -0.5,
-     0.5, -0.5, -0.5,
-
-    // Top face
-    -0.5,  0.5, -0.5,
-    -0.5,  0.5,  0.5,
-     0.5,  0.5,  0.5,
-     0.5,  0.5, -0.5,
-
-    // Bottom face
-    -0.5, -0.5, -0.5,
-     0.5, -0.5, -0.5,
-     0.5, -0.5,  0.5,
-    -0.5, -0.5,  0.5,
-
-    // Right face
-     0.5, -0.5, -0.5,
-     0.5,  0.5, -0.5,
-     0.5,  0.5,  0.5,
-     0.5, -0.5,  0.5,
-
-    // Left face
-    -0.5, -0.5, -0.5,
-    -0.5, -0.5,  0.5,
-    -0.5,  0.5,  0.5,
-    -0.5,  0.5, -0.5
-/* If you enable this comment, the environment will load to see the Teapot fully, but can't be seen without pMatrix
-    //front face
+    // Front face
     -10.0, -10.0,  10.0,
      10.0, -10.0,  10.0,
      10.0,  10.0,  10.0,
@@ -271,7 +392,6 @@ function setupBuffers() {
     -10.0, -10.0,  10.0,
     -10.0,  10.0,  10.0,
     -10.0,  10.0, -10.0
-*/
   ];
 
   // Now pass the list of vertices into WebGL to build the shape. We
@@ -324,45 +444,6 @@ function setupBuffers() {
   // Build the element array buffer; this specifies the indices
   // into the vertex array for each face's vertices.
 
-  cubeTCoordBuffer = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, cubeTCoordBuffer);
-
-  var textureCoordinates = [
-    // Front
-    0.0,  0.0,
-    1.0,  0.0,
-    1.0,  1.0,
-    0.0,  1.0,
-    // Back
-    0.0,  0.0,
-    1.0,  0.0,
-    1.0,  1.0,
-    0.0,  1.0,
-    // Top
-    0.0,  0.0,
-    1.0,  0.0,
-    1.0,  1.0,
-    0.0,  1.0,
-    // Bottom
-    0.0,  0.0,
-    1.0,  0.0,
-    1.0,  1.0,
-    0.0,  1.0,
-    // Right
-    0.0,  0.0,
-    1.0,  0.0,
-    1.0,  1.0,
-    0.0,  1.0,
-    // Left
-    0.0,  0.0,
-    1.0,  0.0,
-    1.0,  1.0,
-    0.0,  1.0
-  ];
-
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordinates),
-                gl.STATIC_DRAW);
-
   cubeTriIndexBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeTriIndexBuffer);
 
@@ -385,32 +466,54 @@ function setupBuffers() {
       new Uint16Array(cubeVertexIndices), gl.STATIC_DRAW);
 }
 
+//----------------------------------------------------------------------------------
+// Onstart function
+function startup() {
+  canvas = document.getElementById("myGLCanvas");
+  gl = createGLContext(canvas);
+  gl.clearColor(0.0, 0.0, 0.0, 1.0);
+  gl.enable(gl.DEPTH_TEST);
+    
+  setupShaders();
+  setupBuffers();
+  setupTextures();
+  tick();
+}
+
+//----------------------------------------------------------------------------------
+// Animation tick
+function tick() {
+    requestAnimFrame(tick);
+    draw();
+    animate();
+}
+
 //------------------------------------------
 // function teapot, receives the buffer containing the texture coordinates, normals, indices and vertex positions
 // initializes all buffers for use in webgl
 function teapot(teapot) {
 
   // Initialize the Teapot buffers
-  vertexPositionBuffer = gl.createBuffer();
+  vertexPositionBuffer = gl.createBuffer(); //vertex positions
   gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapot.vertexPositions), gl.STATIC_DRAW);
   vertexPositionBuffer.itemSize = 3;
   vertexPositionBuffer.numberOfItems = teapot.vertexPositions.length/3;
 
-  vertexNormalBuffer = gl.createBuffer();
+  vertexNormalBuffer = gl.createBuffer(); //normal buffer
   gl.bindBuffer(gl.ARRAY_BUFFER, vertexNormalBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapot.vertexNormals), gl.STATIC_DRAW);
   vertexNormalBuffer.itemSize = 3;
   vertexNormalBuffer.numberOfItems = teapot.vertexNormals.length/3;
 
-  vertexTextureCoordBuffer = gl.createBuffer();
+  vertexTextureCoordBuffer = gl.createBuffer(); //texture coordinates
   gl.bindBuffer(gl.ARRAY_BUFFER, vertexTextureCoordBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapot.vertexTextureCoords), gl.STATIC_DRAW);
   vertexTextureCoordBuffer.itemSize = 2;
   vertexTextureCoordBuffer.numItems = teapot.vertexTextureCoords.length / 2;
   console.log("found " + vertexTextureCoordBuffer.numItems + " texture coords");
 
-  vertexIndexBuffer = gl.createBuffer();
+  vertexIndexBuffer = gl.createBuffer(); //index buffer
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, vertexIndexBuffer);
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(teapot.indices), gl.STATIC_DRAW);
   vertexIndexBuffer.itemSize = 1;
@@ -433,7 +536,7 @@ function computeNorms(teapot)
   var u = vec3.create();
   var v = vec3.create();
 
-  for(var i = 0; i < number_of_triangles; i++) {
+  for(var i = 0; i < number_of_triangles; i++) { //calculate modified indices
     var vi1 = teapot.indices[3*i] * 3;
     var vi2 = teapot.indices[3*i+1] * 3;
     var vi3 = teapot.indices[3*i+2] * 3;
@@ -470,7 +573,7 @@ function computeNorms(teapot)
     teapot.vertexNormals[i * 3 + 2] = normalized[2];
   }
 
-    for(var i = 0; i < numVertices; i++) {
+    for(var i = 0; i < numVertices; i++) { //add texture coordinates
     // angle should be atan(x/z)
     var angle = Math.atan(teapot.vertexPositions[3 * i] / teapot.vertexPositions[3 * i + 2]);
     teapot.vertexTextureCoords[2 * i] = Math.sin((angle + Math.PI / 4) / 2);
@@ -479,309 +582,4 @@ function computeNorms(teapot)
 
   return teapot;
 
-}
-
-
-/*
-    function draw
-    input: none
-    output: none
-
-    Draw the mesh and colors on the canvas in WebGL
-*/
-function draw() { 
-  gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight); //viewing angle static
-  gl.clear(gl.COLOR_BUFFER_BIT);
-
-  // We'll use perspective 
-  mat4.perspective(pMatrix, degToRad(45), gl.viewportWidth / gl.viewportHeight, 0.1, 200.0);
-
-  // We want to look down -z, so create a lookat point in that direction    
- // vec3.add(viewPt, eyePt, viewDir);
-  // Then generate the lookat matrix and initialize the MV matrix to that view
- // mat4.lookAt(mvMatrix,eyePt,viewPt,up);   
-
- //move camera
-  var cameraLocation = [0, 0.15, 0];
-  
-  //new camera location
-  cameraLocation[0] = 0.3 * Math.sin(degToRad(angle));
-  cameraLocation[2] = 0.3 * Math.cos(degToRad(angle));
-  //mat4.identity(mvMatrix);
-  mat4.identity(mvMatrix);
-  mat4.lookAt(mvMatrix, cameraLocation, [0, 0.15, 0], [0, 1, 0]); //set program to look at the teapot
-  mat4.rotateY(mvMatrix, mvMatrix, degToRad(rotAngle)); //rotate along the Y axis
-  drawTeapot(); //call function to draw teapot
-
-
-
-  //
-  // lighting
-  //
-
-  gl.useProgram(shaderProgram);
-
-  var ambientUL = gl.getUniformLocation(shaderProgram, 'ambientLightIntensity');
-  var sunlightDUL = gl.getUniformLocation(shaderProgram, 'sunlightDirection');
-  var sunlightIUL = gl.getUniformLocation(shaderProgram, 'sunlightIntensity');
-
-  gl.uniform3f(ambientUL, 0.6, 0.6, 0.6);
-  gl.uniform3f(sunlightDUL, 3.0, 4.0, -2.0);
-  gl.uniform3f(sunlightIUL, 0.9, 0.9, 0.9);
-
-      //attempt to reflect background
-      if(document.getElementById("reflect_attempt").checked){
-        gl.uniform1i(gl.getUniformLocation(shaderProgram, "reflect"), 1);
-      }
-      else
-        gl.uniform1i(gl.getUniformLocation(shaderProgram, "reflect"), 0);
-}
-//--------------------------------------
-// draws the cube and teapot
-function drawTeapot()
-{
-  //
-  // draw teapot
-  //
-  gl.useProgram(shaderProgram);
-  gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
-  gl.uniform1i(gl.getUniformLocation(shaderProgram,"teapot"), 1);    
-  gl.enableVertexAttribArray(shaderProgram.vertexNormalAttribute);
-  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBuffer);
-  gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, 
-                         vertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0); //enable vertex positions
-                          
-  gl.bindBuffer(gl.ARRAY_BUFFER, vertexNormalBuffer);
-  gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, 
-                         vertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);  //enable normals
-
-  gl.bindBuffer(gl.ARRAY_BUFFER, vertexTextureCoordBuffer);
-  gl.vertexAttribPointer(shaderProgram.texCoordAttribute, 2, gl.FLOAT, false, 0, 0);
-
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, cubeTexture);
-  gl.uniform1i(gl.getUniformLocation(shaderProgram, "uSampler"), 0);  //enable all of the textures for WebGL
-
-  gl.useProgram(shaderProgram);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, vertexIndexBuffer);   
-
-
-  setMatrixUniforms();
-  gl.drawElements(gl.TRIANGLES, vertexIndexBuffer.numberOfItems, gl.UNSIGNED_SHORT, 0); //draw the teapot
-//
-// draw cube
-//
-
-  gl.useProgram(shaderProgram);
-  gl.uniform1i(gl.getUniformLocation(shaderProgram,"teapot"), 0);    
-  gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
-  gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexBuffer);
-  gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, 
-                         3, gl.FLOAT, false, 0, 0); //vertices
-    // Set the texture coordinates attribute for the vertices.
-  gl.enableVertexAttribArray(shaderProgram.texCoordAttribute);
-  gl.bindBuffer(gl.ARRAY_BUFFER, cubeTCoordBuffer);
-  gl.vertexAttribPointer(shaderProgram.texCoordAttribute, 2, gl.FLOAT, false, 0, 0); //texture coords
-
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, cubeTexture);
-  gl.uniform1i(gl.getUniformLocation(shaderProgram, "uSampler"), 0);  
-
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeTriIndexBuffer);
-  setMatrixUniforms();
-  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0); //draw the cube
-}
-
-/*
-    function animate:
-    input: none
-    output: none
-
-    Change the rotation angle along each time interval, done in draw()
-*/
-function animate() {
-  var timeNow = new Date().getTime(); 
-  if (lastTime != 0) {
-    var elapsed = timeNow - lastTime;
-    if(document.getElementById("orbit").checked){
-      rotAngle = (rotAngle + 1.0) % 360
-    }
-  }
-  lastTime = timeNow;
-
-    cubeVertexBuffer = gl.createBuffer();
-
-  // If you want to see just the teapot
-    if(document.getElementById("teapot_only").checked){
-  gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexBuffer);
-
-  // Now create an array of vertices for the cube.
-
-  var vertices = [
-    -10.0, -10.0,  10.0,
-     10.0, -10.0,  10.0,
-     10.0,  10.0,  10.0,
-    -10.0,  10.0,  10.0,
-
-    // Back face
-    -10.0, -10.0, -10.0,
-    -10.0,  10.0, -10.0,
-     10.0,  10.0, -10.0,
-     10.0, -10.0, -10.0,
-
-    // Top face
-    -10.0,  10.0, -10.0,
-    -10.0,  10.0,  10.0,
-     10.0,  10.0,  10.0,
-     10.0,  10.0, -10.0,
-
-    // Bottom face
-    -10.0, -10.0, -10.0,
-     10.0, -10.0, -10.0,
-     10.0, -10.0,  10.0,
-    -10.0, -10.0,  10.0,
-
-    // Right face
-     10.0, -10.0, -10.0,
-     10.0,  10.0, -10.0,
-     10.0,  10.0,  10.0,
-     10.0, -10.0,  10.0,
-
-    // Left face
-    -10.0, -10.0, -10.0,
-    -10.0, -10.0,  10.0,
-    -10.0,  10.0,  10.0,
-    -10.0,  10.0, -10.0
-  ];
-
-  // Now pass the list of vertices into WebGL to build the shape. We
-  // do this by creating a Float32Array from the JavaScript array,
-  // then use it to fill the current vertex buffer.
-
-  // attempt at Skybox, couldn't get pMatrix to work so it's pretty buggy
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
-  }
-  else if(document.getElementById("skybox_attempt").checked){
-  gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexBuffer);
-
-  // Now create an array of vertices for the cube.
-
-  var vertices = [
-    -0.5, -0.5,  0.5,
-     0.5, -0.5,  0.5,
-     0.5,  0.5,  0.5,
-    -0.5,  0.5,  0.5,
-
-    // Back face
-    -0.5, -0.5, -0.5,
-    -0.5,  0.5, -0.5,
-     0.5,  0.5, -0.5,
-     0.5, -0.5, -0.5,
-
-    // Top face
-    -0.5,  0.5, -0.5,
-    -0.5,  0.5,  0.5,
-     0.5,  0.5,  0.5,
-     0.5,  0.5, -0.5,
-
-    // Bottom face
-    -0.5, -0.5, -0.5,
-     0.5, -0.5, -0.5,
-     0.5, -0.5,  0.5,
-    -0.5, -0.5,  0.5,
-
-    // Right face
-     0.5, -0.5, -0.5,
-     0.5,  0.5, -0.5,
-     0.5,  0.5,  0.5,
-     0.5, -0.5,  0.5,
-
-    // Left face
-    -0.5, -0.5, -0.5,
-    -0.5, -0.5,  0.5,
-    -0.5,  0.5,  0.5,
-    -0.5,  0.5, -0.5
-  ];
-
-  // Now pass the list of vertices into WebGL to build the shape. We
-  // do this by creating a Float32Array from the JavaScript array,
-  // then use it to fill the current vertex buffer.
-
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
-  }
-
-}
-/*
-    function startup:
-    input: none
-    output: none
-
-    Entry point of HTML file, create the canvas, setup the shaders and buffers, change to white background
-    and start the animation
-*/
-function startup() {
-  canvas = document.getElementById("myGLCanvas");
-  gl = createGLContext(canvas);
-  gl.enable(gl.DEPTH_TEST);
-  setupShaders(); 
-  setupBuffers();
-  setupTextures();
-  gl.clearColor(0.3, 0.5, 0.8, 1.0);
-  tick();
-}
-/*
-    function tick:
-    input: none
-    output: none
-
-    Redraw the mesh and colors after each animation frame
-*/
-function tick() {
-  requestAnimFrame(tick);
-  draw();
-  animate();
-}
-
-//---------------------------------------------------------------------------------
-// Code for skybox, not fully implemented
-function setupTextures() {
-  cubeTexture = gl.createTexture();
- gl.bindTexture(gl.TEXTURE_2D, cubeTexture);
-// Fill the texture with a 1x1 blue pixel.
-gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
-              new Uint8Array([0, 0, 255, 255]));
-
-
-  cubeImage = new Image();
-  cubeImage.onload = function() { handleTextureLoaded(cubeImage, cubeTexture); }
-  cubeImage.src = "pos-x.png";
-   // https://goo.gl/photos/SUo7Zz9US1AKhZq49
-}
-
-//---------------------------------------------------------------------------------
-
-function isPowerOf2(value) {
-  return (value & (value - 1)) == 0;
-}
-
-//---------------------------------------------------------------------------------
-
-function handleTextureLoaded(image, texture) {
-  console.log("handleTextureLoaded, image = " + image);
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,gl.UNSIGNED_BYTE, image);
-  // Check if the image is a power of 2 in both dimensions.
-  if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
-     // Yes, it's a power of 2. Generate mips.
-     gl.generateMipmap(gl.TEXTURE_2D);
-     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
-     console.log("Loaded power of 2 texture");
-  } else {
-     // No, it's not a power of 2. Turn of mips and set wrapping to clamp to edge
-     gl.texParameteri(gl.TETXURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-     gl.texParameteri(gl.TETXURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-     gl.texParameteri(gl.TETXURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-     console.log("Loaded non-power of 2 texture");
-  }
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 }
